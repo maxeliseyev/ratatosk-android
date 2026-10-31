@@ -22,7 +22,7 @@ val hasReleaseKey = !releaseKeystore.isNullOrBlank() && file(releaseKeystore).ex
 
 android {
     namespace = "dev.ratatosk"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "dev.ratatosk"

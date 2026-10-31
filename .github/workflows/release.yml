@@ -41,8 +41,7 @@ jobs:
         run: |
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager --install \
-            "platforms;android-37" \
-            "build-tools;37.0.0" \
+            "platforms;android-36" \
             "build-tools;36.0.0"
           # The runner image ships an NDK; only install one if none is there.
           if ! ls "$ANDROID_HOME/ndk"/*/ >/dev/null 2>&1; then

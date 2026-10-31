@@ -105,7 +105,7 @@ adb shell am start -n dev.ratatosk/.MainActivity \
 
 ## Сборка
 
-Нужны: Rust stable с Android-таргетами, Android NDK, Android SDK (platform 37),
+Нужны: Rust stable с Android-таргетами, Android NDK, Android SDK (platform 36),
 JDK 17+.
 
 ```sh
