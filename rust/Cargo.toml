@@ -1,0 +1,33 @@
+[package]
+name = "ratatosk-android"
+version = "0.1.0"
+edition = "2021"
+description = "JNI bridge over ratatosk-core for the Ratatosk Android VPN client"
+publish = false
+
+# Built as a shared library loaded by RatatoskCore.kt via System.loadLibrary.
+[lib]
+crate-type = ["cdylib"]
+name = "ratatosk_android"
+
+[workspace]
+
+[dependencies]
+ratatosk-core = { path = "../../ratatosk/crates/core" }
+jni = "0.21"
+libc = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+anyhow = "1"
+serde_json = "1"
+
+# Same fork of rustls the desktop/iOS core uses: REALITY session_id hook and
+# the Chrome ClientHello rewriter. Keep the rev in step with the ratatosk repo.
+[patch.crates-io]
+rustls = { git = "https://github.com/maxeliseyev/rustls.git", rev = "7df70d14" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
