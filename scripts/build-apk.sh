@@ -28,7 +28,7 @@ export ANDROID_SDK_ROOT="$ANDROID_HOME"
 
 if [ "$mode" = "release" ]; then
     "$here/gradlew" -p "$here" :app:assembleRelease
-    apk="$here/app/build/outputs/apk/release/app-release-unsigned.apk"
+    apk="$(find "$here/app/build/outputs/apk/release" -name 'app-release*.apk' | head -1)"
 else
     "$here/gradlew" -p "$here" :app:assembleDebug
     apk="$here/app/build/outputs/apk/debug/app-debug.apk"

@@ -7,3 +7,8 @@ local.properties
 captures/
 app/src/main/jniLibs/
 rust/target/
+
+# Release signing key and its passwords: never commit these.
+keystore.properties
+*.jks
+*.keystore
