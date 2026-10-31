@@ -103,6 +103,35 @@ adb shell am start -n dev.ratatosk/.MainActivity \
 - На десктопе (та же сеть) QUIC до сервера не проходил — мобильная сеть
   достучалась, то есть UDP в сети Mac резался.
 
+## Релиз
+
+Тег `v*` запускает GitHub Actions (`.github/workflows/release.yml`): он
+поднимает ядро для трёх ABI, подписывает APK и публикует GitHub Release с
+файлом `ratatosk-<тег>.apk`. Вручную — Actions → release → Run workflow (без
+тега соберётся только артефакт, релиз не создаётся).
+
+```sh
+git tag v0.1.1 && git push origin v0.1.1
+```
+
+Версия берётся из тега (`versionName`), `versionCode` — из номера запуска.
+
+### Подпись
+
+Нужен один долгоживущий ключ (иначе новые APK не встанут поверх старых):
+
+```sh
+scripts/make-keystore.sh     # создаёт ключ и печатает команды для секретов
+```
+
+Скрипт генерирует keystore вне репозитория и выводит `gh secret set` для
+четырёх секретов: `RATATOSK_KEYSTORE_BASE64`, `RATATOSK_KEYSTORE_PASSWORD`,
+`RATATOSK_KEY_PASSWORD`, `RATATOSK_KEY_ALIAS`. Ключ и пароль надо сохранить
+надёжно: потеря ключа = пользователи не смогут обновиться, только переставить.
+
+Локально подпись включается файлом `keystore.properties` (gitignored) с теми же
+`RATATOSK_*` переменными; без него `assembleRelease` подписывается debug-ключом.
+
 ## Сборка
 
 Нужны: Rust stable с Android-таргетами, Android NDK, Android SDK (platform 36),
