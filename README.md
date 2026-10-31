@@ -80,6 +80,29 @@ fd, а не callback хоста. При изменениях ядра сверя
 - Смена сети: `ConnectivityManager` → `nativeNetworkChanged`.
 - QR-сканер и вставка из буфера.
 
+## Установка ссылки по adb (удобно при отладке)
+
+`MainActivity` принимает ссылку через intent, поэтому сервер можно добавить
+без ручного ввода:
+
+```sh
+adb shell am start -n dev.ratatosk/.MainActivity \
+  --es link 'h3://UUID@host:443?sni=host#name'
+```
+
+Так же работают обычные `vless://`, `h3://`, `vpn://` по тапу (intent-фильтр
+`VIEW`): ссылку можно открыть из мессенджера или браузера.
+
+## Проверено на устройстве
+
+- Redmi Note 8 Pro (`begonia`, arm64-v8a, Android 11 / API 30): сборка
+  устанавливается, VPN поднимается, значок VPN в статус-баре.
+- `h3://` боевой сервер: `ping all` дал `1406 ms`, после `connect` пошёл
+  реальный трафик (facebook, telegram, `8.8.8.8 udp:53`), статистика и лог
+  потоков обновляются, `api.ipify.org` показал IP выхода сервера.
+- На десктопе (та же сеть) QUIC до сервера не проходил — мобильная сеть
+  достучалась, то есть UDP в сети Mac резался.
+
 ## Сборка
 
 Нужны: Rust stable с Android-таргетами, Android NDK, Android SDK (platform 37),

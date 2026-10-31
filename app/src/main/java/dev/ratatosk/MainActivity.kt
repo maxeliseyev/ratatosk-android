@@ -1,6 +1,7 @@
 package dev.ratatosk
 
 import android.app.Activity
+import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -17,6 +18,7 @@ import dev.ratatosk.vpn.TunnelController
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleIntent(intent)
         setContent {
             val consent = rememberLauncherForActivityResult(
                 ActivityResultContracts.StartActivityForResult()
@@ -47,5 +49,27 @@ class MainActivity : ComponentActivity() {
                 onDisconnect = { TunnelController.disconnect() },
             )
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    /** A link opened by the app (`vless://`, `h3://`, `vpn://`) or passed as
+     *  an extra by `adb shell am start --es link …`, added to the server list. */
+    private fun handleIntent(intent: Intent?) {
+        if (intent == null) return
+        val data = intent.dataString
+        val link = when {
+            data != null && LINKS.any { data.startsWith(it) } -> data
+            else -> intent.getStringExtra("link")
+        }
+        if (!link.isNullOrEmpty()) TunnelController.accept(link)
+    }
+
+    private companion object {
+        val LINKS = listOf("vless://", "h3://", "vpn://")
     }
 }
