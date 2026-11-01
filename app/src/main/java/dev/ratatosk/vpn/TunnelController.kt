@@ -236,12 +236,27 @@ object TunnelController {
             _status.value == VpnStatus.DISCONNECTING
 
     private suspend fun poll() {
+        // Poll fast while traffic moves and slower while it is quiet: the
+        // byte counters are the liveness signal, so an idle tunnel does not
+        // wake the UI every second.
+        var lastUp = -1L
+        var lastDown = -1L
         while (currentCoroutineContext().isActive) {
             if (onScreen && _status.value == VpnStatus.CONNECTED && handle != 0L) {
-                _stats.value = RatatoskTools.parseStats(RatatoskCore.nativeStats())
+                val stats = RatatoskTools.parseStats(RatatoskCore.nativeStats())
+                _stats.value = stats
                 _flows.value = RatatoskTools.parseFlows(RatatoskCore.nativeFlows(handle, 100))
+                val moved = stats != null && (stats.up != lastUp || stats.down != lastDown)
+                if (stats != null) {
+                    lastUp = stats.up
+                    lastDown = stats.down
+                }
+                delay(if (moved) 1_000 else 3_000)
+            } else {
+                lastUp = -1L
+                lastDown = -1L
+                delay(1_000)
             }
-            delay(1_000)
         }
     }
 
