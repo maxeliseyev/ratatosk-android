@@ -35,8 +35,11 @@ use tokio::sync::{mpsc, watch};
 const FAKE_DNS_CAPACITY: u32 = 16_384;
 /// Packets written to the TUN in one poll round at most.
 const PACKET_BATCH: usize = 64;
-/// How long the TUN reader blocks in poll() before checking the stop flag.
-const READ_POLL_MS: i32 = 200;
+/// How long `write_all` waits on POLLOUT before retrying a blocked write.
+const WRITE_POLL_MS: i32 = 200;
+/// epoll event data tags: which fd woke the reader.
+const EPOLL_TAG_TUN: u64 = 1;
+const EPOLL_TAG_STOP: u64 = 2;
 
 // ── Android logging ────────────────────────────────────────────────────────
 
@@ -199,6 +202,7 @@ struct AndroidTunnel {
     stop_flag: Arc<AtomicBool>,
     reader: Option<std::thread::JoinHandle<()>>,
     fd: RawFd,
+    stop_event: RawFd,
 }
 
 struct FdCtx {
@@ -244,48 +248,110 @@ fn write_all(fd: RawFd, mut buf: &[u8]) {
                     events: libc::POLLOUT,
                     revents: 0,
                 };
-                unsafe { libc::poll(&mut pfd, 1, READ_POLL_MS) };
+                unsafe { libc::poll(&mut pfd, 1, WRITE_POLL_MS) };
             }
             _ => break,
         }
     }
 }
 
-/// Feed the TUN's packets into the stack until stopped.
+/// Write to the stop eventfd so the reader's `epoll_wait` returns and it
+/// exits its loop promptly.
+fn signal_stop(stop_event: RawFd) {
+    let one: u64 = 1;
+    unsafe {
+        libc::write(
+            stop_event,
+            &one as *const u64 as *const c_void,
+            std::mem::size_of::<u64>(),
+        );
+    }
+}
+
+/// Feed the TUN's packets into the stack until the stop event fires. The
+/// reader blocks in `epoll_wait` with no timeout, so an idle tunnel wakes the
+/// CPU only when a packet actually arrives or it is told to stop.
 fn spawn_reader(
     fd: RawFd,
     to_stack: mpsc::Sender<Vec<u8>>,
     stop: Arc<AtomicBool>,
+    stop_event: RawFd,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name("ratatosk-tun-read".to_string())
         .spawn(move || {
+            let epoll_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+            if epoll_fd < 0 {
+                return;
+            }
+            let mut tun_ev = libc::epoll_event {
+                events: libc::EPOLLIN as u32,
+                u64: EPOLL_TAG_TUN,
+            };
+            if unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut tun_ev) } < 0 {
+                unsafe { libc::close(epoll_fd) };
+                return;
+            }
+            let mut stop_ev = libc::epoll_event {
+                events: libc::EPOLLIN as u32,
+                u64: EPOLL_TAG_STOP,
+            };
+            if unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, stop_event, &mut stop_ev) }
+                < 0
+            {
+                unsafe { libc::close(epoll_fd) };
+                return;
+            }
+
             let mut buf = vec![0u8; 65_536];
+            let mut events = [libc::epoll_event { events: 0, u64: 0 }; 16];
             while !stop.load(Ordering::Relaxed) {
-                let mut pfd = libc::pollfd {
-                    fd,
-                    events: libc::POLLIN,
-                    revents: 0,
+                let n = unsafe {
+                    libc::epoll_wait(
+                        epoll_fd,
+                        events.as_mut_ptr(),
+                        events.len() as libc::c_int,
+                        -1,
+                    )
                 };
-                let ready = unsafe { libc::poll(&mut pfd, 1, READ_POLL_MS) };
-                if ready <= 0 {
-                    continue;
+                if n < 0 {
+                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    break;
                 }
-                if pfd.revents & libc::POLLIN == 0 {
-                    continue;
-                }
-                let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
-                if n > 0 {
-                    let _ = to_stack.try_send(buf[..n as usize].to_vec());
-                    continue;
-                }
-                let err = std::io::Error::last_os_error();
-                match err.kind() {
-                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock => continue,
-                    _ => break,
+                for ev in events.iter().take(n as usize) {
+                    match ev.u64 {
+                        EPOLL_TAG_STOP => {
+                            unsafe { libc::close(epoll_fd) };
+                            return;
+                        }
+                        EPOLL_TAG_TUN => drain_tun(fd, &to_stack, &mut buf),
+                        _ => {}
+                    }
                 }
             }
+            unsafe { libc::close(epoll_fd) };
         })
+}
+
+/// Read every queued packet off the TUN fd until it runs dry; the fd is
+/// non-blocking, so this returns quickly when the kernel queue is empty.
+fn drain_tun(fd: RawFd, to_stack: &mpsc::Sender<Vec<u8>>, buf: &mut [u8]) {
+    loop {
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
+        if n > 0 {
+            let _ = to_stack.try_send(buf[..n as usize].to_vec());
+            continue;
+        }
+        if n == 0 {
+            return;
+        }
+        match std::io::Error::last_os_error().kind() {
+            std::io::ErrorKind::Interrupted => continue,
+            _ => return,
+        }
+    }
 }
 
 fn set_nonblocking(fd: RawFd) {
@@ -360,7 +426,7 @@ fn start_jni(
         Vec::new()
     } else {
         env.get_string(&direct_zones)
-            .map(|s| String::from(s))
+            .map(String::from)
             .unwrap_or_default()
             .split(',')
             .map(str::trim)
@@ -374,8 +440,16 @@ fn start_jni(
     }
     set_nonblocking(fd);
 
+    // The reader blocks in epoll_wait until a packet or this stop signal;
+    // writing to it wakes the reader for a clean, immediate shutdown.
+    let stop_event = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
+    if stop_event < 0 {
+        unsafe { libc::close(fd) };
+        anyhow::bail!("eventfd() failed: {}", std::io::Error::last_os_error());
+    }
+
     let ctx = Box::into_raw(Box::new(FdCtx { fd }));
-    let engine = match start_engine(
+    let mut engine = match start_engine(
         &link,
         mtu as u16,
         &zones,
@@ -387,11 +461,25 @@ fn start_jni(
             // The fd was handed over by detachFd(): we own it, so close it.
             unsafe { drop(Box::from_raw(ctx)) };
             unsafe { libc::close(fd) };
+            unsafe { libc::close(stop_event) };
             return Err(e);
         }
     };
     let stop_flag = Arc::new(AtomicBool::new(false));
-    let reader = spawn_reader(fd, engine.to_stack.clone(), stop_flag.clone())?;
+    let reader = match spawn_reader(fd, engine.to_stack.clone(), stop_flag.clone(), stop_event) {
+        Ok(reader) => reader,
+        Err(e) => {
+            // Stop the engine before freeing ctx/fd, as nativeStop does.
+            let _ = engine.stop.send(true);
+            if let Some(runtime) = engine.runtime.take() {
+                runtime.shutdown_timeout(Duration::from_secs(2));
+            }
+            unsafe { drop(Box::from_raw(ctx)) };
+            unsafe { libc::close(fd) };
+            unsafe { libc::close(stop_event) };
+            return Err(e.into());
+        }
+    };
     tracing::info!("Android tunnel started (mtu {mtu}, fd {fd})");
     let tunnel = AndroidTunnel {
         engine,
@@ -399,6 +487,7 @@ fn start_jni(
         stop_flag,
         reader: Some(reader),
         fd,
+        stop_event,
     };
     Ok(Box::into_raw(Box::new(tunnel)) as jlong)
 }
@@ -413,16 +502,20 @@ pub extern "system" fn Java_dev_ratatosk_core_RatatoskCore_nativeStop(
         return;
     }
     let mut tunnel = unsafe { Box::from_raw(handle as *mut AndroidTunnel) };
+    // Wake the reader's epoll_wait first so it exits promptly, then stop the
+    // engine and join the thread.
+    signal_stop(tunnel.stop_event);
     tunnel.stop_flag.store(true, Ordering::SeqCst);
     let _ = tunnel.engine.stop.send(true);
     if let Some(runtime) = tunnel.engine.runtime.take() {
-        let _ = runtime.shutdown_timeout(Duration::from_secs(2));
+        runtime.shutdown_timeout(Duration::from_secs(2));
     }
     if let Some(reader) = tunnel.reader.take() {
         let _ = reader.join();
     }
     unsafe { drop(Box::from_raw(tunnel.ctx)) };
     unsafe { libc::close(tunnel.fd) };
+    unsafe { libc::close(tunnel.stop_event) };
     tracing::info!("Android tunnel stopped");
 }
 
