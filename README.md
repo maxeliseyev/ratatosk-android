@@ -1,11 +1,10 @@
 # Ratatosk для Android
 
-Android-клиент на том же Rust-ядре, что и desktop/iOS Ratatosk, по образу и
-подобию [`ratatosk-ios`](../ratatosk-ios). Это VPN-приложение: `VpnService`
+Android-клиент на том же Rust-ядре, что и desktop/iOS Ratatosk. Это VPN-приложение: `VpnService`
 поднимает системный туннель, а всё остальное — REALITY, Vision, XHTTP/WS,
 routing, FakeDNS, подписки — делает `ratatosk-core`.
 
-Основной репозиторий ([`../ratatosk`](../ratatosk)) **не меняется**: JNI-мост
+Основной репозиторий ([`ratatosk`](https://github.com/maxeliseyev/ratatosk.git)) **не меняется**: JNI-мост
 живёт в `rust/` этого репозитория и зависит от `crates/core` по path, как
 iOS-репозиторий зависит от `crates/ffi`.
 
