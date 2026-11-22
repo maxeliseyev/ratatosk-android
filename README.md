@@ -8,6 +8,12 @@ routing, FakeDNS, подписки — делает `ratatosk-core`.
 живёт в `rust/` этого репозитория и зависит от `crates/core` по path, как
 iOS-репозиторий зависит от `crates/ffi`.
 
+Мост собирается против того `ratatosk`, на который указывает `RATATOSK_DIR`
+(по умолчанию `../ratatosk`); на момент этого коммита — `ratatosk-core 0.20.10`
+и тот же форк `rustls`, что у остальных клиентов. Версия ядра видна в шапке
+приложения: строка под `~/ratatosk` показывает
+`ratatosk-android <версия> · core <версия>`.
+
 ## Как это устроено
 
 ```
@@ -43,8 +49,8 @@ iOS-репозиторий зависит от `crates/ffi`.
 
 Почему Rust владеет fd: `VpnService.Builder.establish()` даёт
 `ParcelFileDescriptor`; приложение делает `detachFd()` и передаёт сырой fd в
-`nativeStart`. Ядро dup‑нет его себе, `poll()`‑ит входящие пакеты в netstack и
-пишет исходящие обратно. Никаких JNI-вызовов на каждый пакет.
+`nativeStart`. Ядро dup‑нет его себе, `epoll_wait()`‑ит входящие пакеты в
+netstack и пишет исходящие обратно. Никаких JNI-вызовов на каждый пакет.
 
 ## Структура
 
@@ -59,6 +65,7 @@ app/src/main/java/dev/ratatosk/
   ui/RatatoskScreen.kt       сам экран (моно, монospace)
   ui/QrScanner.kt            CameraX + zxing
 rust/                       Rust-крейт: cdylib + JNI
+rust/build.rs               версия ratatosk-core в nativeVersion()
 scripts/update-core.sh      сборка .so под Android, копия в jniLibs
 scripts/build-apk.sh        сборка APK
 ```
@@ -66,6 +73,9 @@ scripts/build-apk.sh        сборка APK
 `rust/src/lib.rs` повторяет `crates/ffi/src/lib.rs::start` из основного репо
 (инициализация `ProxyClient`/`Netstack`/`FakeDns`), только транспорт пакетов —
 fd, а не callback хоста. При изменениях ядра сверяйтесь с `crates/ffi`.
+`[patch.crates-io]` в `rust/Cargo.toml` пиньит тот же коммит форка `rustls`,
+что и корневой `Cargo.toml` репозитория `ratatosk`; при обновлении ядра его
+надо двигать вместе с ядром, иначе REALITY/фингерпринт разъедутся.
 
 ## Что уже есть
 
@@ -74,10 +84,18 @@ fd, а не callback хоста. При изменениях ядра сверя
   IPv4 и IPv6 по умолчанию, MTU 1500.
 - Ссылки `vless://`, `h3://`, `vpn://`; подписки `http(s)://` с обновлением.
 - Список серверов, выбор активного, `ping all`, `best` (как в iOS).
-- Живой лог соединений (route/хост/трафик) и счётчики.
+- Живой лог соединений (route/хост/трафик) и счётчики; те же счётчики раз в
+  30 секунд уходят в logcat (`stats: …`).
 - Сплит-туннель «RU direct» (`.ru .su .рф` напрямую).
-- Смена сети: `ConnectivityManager` → `nativeNetworkChanged`.
+- Снифинг ClientHello (ядро 0.20.6+): поток на «голый» адрес `:443`/`:8443`
+  получает имя из SNI, поэтому правила `.ru` срабатывают, даже если клиент
+  резолвил адрес сам (DoH или захардкоженный IP).
+- Смена сети: `ConnectivityManager` → `nativeNetworkChanged`; ядро рвёт старые
+  Mux-соединения и переезжает на новый путь, а сокеты релея идут с
+  `TCP_NODELAY` и агрессивным keepalive.
 - QR-сканер и вставка из буфера.
+- Безопасное падение: паника в воркере ядра попадает в logcat (`panic in …`),
+  а не в никуда.
 
 ## Установка ссылки по adb (удобно при отладке)
 
@@ -110,7 +128,7 @@ adb shell am start -n dev.ratatosk/.MainActivity \
 тега соберётся только артефакт, релиз не создаётся).
 
 ```sh
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.2.1 && git push origin v0.2.1
 ```
 
 Версия берётся из тега (`versionName`), `versionCode` — из номера запуска.
@@ -156,10 +174,9 @@ scripts/build-apk.sh --release  # release
 
 ## Ограничения и что дальше
 
-- Версия — ранний прототип; проверки на живом устройстве и на боевом сервере
-  ещё не было.
 - Нет своего экрана логов ядра (логи идут в logcat, тег `ratatosk`).
-- Release APK пока без подписи и без minify.
+- Release APK без minify: JNI-поверхность и CameraX небольшие, а рабочий
+  подписанный билд важнее нескольких мегабайт.
 - `x86` (32-бит) не собирается — старые эмуляторы не поддерживаются.
 - Стоит сверить память под нагрузкой (на iOS лимит extension ~50 МБ) и
-  Wi-Fi ↔ LTE на реальном устройстве.
+  Wi-Fi ↔ LTE на реальном устройстве уже на ядре 0.20.10.

@@ -116,14 +116,20 @@ fun RatatoskScreen(onConnect: () -> Unit, onDisconnect: () -> Unit) {
 
 @Composable
 private fun Header(status: VpnStatus) {
+    // Shows the bridge version and the core it was built against, so a build
+    // can be told apart from an older .so at a glance.
+    val version = remember { RatatoskTools.version() }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = "~/ratatosk",
-            color = Palette.text,
-            fontFamily = mono,
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Bold,
-        )
+        Column {
+            Text(
+                text = "~/ratatosk",
+                color = Palette.text,
+                fontFamily = mono,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(version, color = Palette.dim, fontFamily = mono, fontSize = 10.sp)
+        }
         Spacer(Modifier.weight(1f))
         Text(stateWord(status), color = Palette.dim, fontFamily = mono, fontSize = 12.sp)
     }

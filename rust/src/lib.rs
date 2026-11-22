@@ -21,7 +21,7 @@ use ratatosk_core::netstack::flows::{FlowLog, DEFAULT_CAPACITY};
 use ratatosk_core::netstack::Netstack;
 use ratatosk_core::proxy::direct_dns::DirectResolver;
 use ratatosk_core::proxy::dns_cache::DnsCache;
-use ratatosk_core::proxy::stats::STATS;
+use ratatosk_core::proxy::stats::{human_bytes, STATS};
 use ratatosk_core::{ActiveServer, ProxyClient};
 use std::ffi::{c_char, c_void, CString};
 use std::os::fd::RawFd;
@@ -37,6 +37,8 @@ const FAKE_DNS_CAPACITY: u32 = 16_384;
 const PACKET_BATCH: usize = 64;
 /// How long `write_all` waits on POLLOUT before retrying a blocked write.
 const WRITE_POLL_MS: i32 = 200;
+/// How often the traffic counters go to logcat while they change.
+const STATS_EVERY: Duration = Duration::from_secs(30);
 /// epoll event data tags: which fd woke the reader.
 const EPOLL_TAG_TUN: u64 = 1;
 const EPOLL_TAG_STOP: u64 = 2;
@@ -61,6 +63,14 @@ fn install_logger() {
             .with_target(false)
             .with_writer(|| LogcatWriter)
             .try_init();
+        // A panic in a core worker would otherwise go to stderr, which Android
+        // drops; put it in logcat next to the rest of the core's log.
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let thread = std::thread::current();
+            tracing::error!("panic in {}: {info}", thread.name().unwrap_or("?"));
+            default(info);
+        }));
     });
 }
 
@@ -184,7 +194,18 @@ fn start_engine(
             batch.clear();
         }
     });
+    runtime.spawn(log_stats_every(STATS_EVERY));
     tracing::info!("Tunnel core started for {}", config.server.endpoint());
+    let server = &config.server;
+    tracing::info!(
+        "server: {} {} flow {} sni {} fp {} mux {}",
+        server.security,
+        server.transport,
+        server.flow.as_deref().unwrap_or("-"),
+        server.sni.as_deref().unwrap_or("-"),
+        server.fingerprint.as_deref().unwrap_or("-"),
+        if config.mux.enabled { "on" } else { "off" },
+    );
     Ok(Engine {
         runtime: Some(runtime),
         connector,
@@ -379,6 +400,34 @@ fn jstring_of(env: &mut JNIEnv, s: String) -> jstring {
         .unwrap_or(std::ptr::null_mut())
 }
 
+async fn log_stats_every(period: Duration) {
+    let mut last = None;
+    let mut ticks = tokio::time::interval(period);
+    ticks.tick().await;
+    loop {
+        ticks.tick().await;
+        let s = STATS.snapshot();
+        let now = (s.active, s.total, s.up, s.down, s.errors);
+        if last != Some(now) {
+            last = Some(now);
+            log_stats();
+        }
+    }
+}
+
+/// `stats: 4 open · 57 total · up 1.2 MiB · down 31.0 MiB · 2 errors`
+fn log_stats() {
+    let s = STATS.snapshot();
+    tracing::info!(
+        "stats: {} open · {} total · up {} · down {} · {} errors",
+        s.active,
+        s.total,
+        human_bytes(s.up),
+        human_bytes(s.down),
+        s.errors
+    );
+}
+
 #[no_mangle]
 pub extern "system" fn Java_dev_ratatosk_core_RatatoskCore_nativeVersion(
     mut env: JNIEnv,
@@ -386,7 +435,11 @@ pub extern "system" fn Java_dev_ratatosk_core_RatatoskCore_nativeVersion(
 ) -> jstring {
     jstring_of(
         &mut env,
-        format!("ratatosk-android {}", env!("CARGO_PKG_VERSION")),
+        format!(
+            "ratatosk-android {} · core {}",
+            env!("CARGO_PKG_VERSION"),
+            env!("RATATOSK_CORE_VERSION"),
+        ),
     )
 }
 
@@ -502,6 +555,11 @@ pub extern "system" fn Java_dev_ratatosk_core_RatatoskCore_nativeStop(
         return;
     }
     let mut tunnel = unsafe { Box::from_raw(handle as *mut AndroidTunnel) };
+    // Flows only log when they end; those cut by the stop would go unsaid.
+    for flow in tunnel.engine.flows.still_open() {
+        tracing::info!("flow {}", flow.summary());
+    }
+    log_stats();
     // Wake the reader's epoll_wait first so it exits promptly, then stop the
     // engine and join the thread.
     signal_stop(tunnel.stop_event);

@@ -30,7 +30,7 @@ android {
         targetSdk = 36
         // Overridden by the release workflow: -PversionName=0.2.0 -PversionCode=42.
         versionCode = (providers.gradleProperty("versionCode").orNull ?: "1").toInt()
-        versionName = providers.gradleProperty("versionName").orNull ?: "0.1.0"
+        versionName = providers.gradleProperty("versionName").orNull ?: "0.2.1"
 
         ndk {
             // ABIs that scripts/update-core.sh builds.
